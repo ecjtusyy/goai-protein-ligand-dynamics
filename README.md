@@ -19,6 +19,10 @@ python -m scripts.inspect_misato --pdb-id 3SNC
 
 已验证 `3SNC` 的配体重原子轨迹形状为 `(100, 39, 3)`。
 
+## Kaggle
+
+直接上传并运行 [`notebooks/01_misato100_end_to_end.ipynb`](notebooks/01_misato100_end_to_end.ipynb)。首次自动下载 725 MB 子集时打开 Internet；也可以先把 `MISATO_100` 作为 Kaggle Dataset 挂载。Notebook 会把 CSV、PNG 和 checkpoint 写到 `/kaggle/working/goai_results/`。
+
 ## 复现
 
 ```bash
@@ -47,17 +51,17 @@ Residual MLP 根据最近两步速度预测下一步速度。Ours 从同一 MLP 
 
 | 任务 | Static | Linear | MLP | Ours |
 | --- | ---: | ---: | ---: | ---: |
-| T1: 10 → 10 | 2.0601 | 11.7462 | 2.0835 | **2.0405** |
-| T2: 80 → 20 | 4.6316 | 20.1996 | **4.4528** | 4.8743 |
-| T3: 20 → 80 | **6.9745** | 82.6385 | 8.4936 | 7.8493 |
+| T1: 10 → 10 | 2.0601 | 11.7462 | 2.0750 | **2.0279** |
+| T2: 80 → 20 | 4.6316 | 20.1996 | **4.6023** | 4.8293 |
+| T3: 20 → 80 | **6.9745** | 82.6385 | 8.0019 | 7.6985 |
 
 最后一个预测时刻的平均 bond-length error：
 
 | 任务 | Static | Linear | MLP | Ours |
 | --- | ---: | ---: | ---: | ---: |
-| T1: 10 → 10 | 0.0365 | 2.3423 | 0.0807 | **0.0009** |
-| T2: 80 → 20 | 0.0371 | 5.1318 | 0.1408 | **0.0011** |
-| T3: 20 → 80 | 0.0383 | 27.9960 | 0.5079 | **0.0084** |
+| T1: 10 → 10 | 0.0365 | 2.3423 | 0.1021 | **0.0008** |
+| T2: 80 → 20 | 0.0371 | 5.1318 | 0.1719 | **0.0010** |
+| T3: 20 → 80 | 0.0383 | 27.9960 | 0.7524 | **0.0068** |
 
 ![RMSD vs prediction horizon](results/final_rmsd_test.png)
 
@@ -78,3 +82,5 @@ Residual MLP 根据最近两步速度预测下一步速度。Ours 从同一 MLP 
 
 - [MISATO dataset](https://github.com/t7morgen/misato-dataset)
 - [NeuralMD](https://github.com/chao1224/NeuralMD)
+- [MISATO paper](https://doi.org/10.1038/s43588-024-00627-2)
+- [NeuralMD paper](https://doi.org/10.1038/s41467-025-67808-z)

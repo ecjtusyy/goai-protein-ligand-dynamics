@@ -1,5 +1,6 @@
 data/
 checkpoints/
+kaggle_results/
 __pycache__/
 .pytest_cache/
 .ipynb_checkpoints/
