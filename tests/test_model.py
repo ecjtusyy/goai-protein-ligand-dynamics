@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from src.geometry import bond_length_error, infer_bonds
+from src.geometry import bond_length_error, infer_bonds, project_bond_lengths
 from src.model import VelocityMLP
 
 
@@ -31,3 +31,16 @@ def test_infers_bond_and_measures_length_error():
         torch.tensor(edges),
     )
     torch.testing.assert_close(error, torch.tensor(0.2))
+
+
+def test_projection_restores_reference_bond_length():
+    reference = torch.tensor([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]])
+    prediction = torch.tensor([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+    edges = torch.tensor([[0], [1]])
+
+    projected = project_bond_lengths(prediction, reference, edges, iterations=1)
+
+    torch.testing.assert_close(
+        torch.linalg.vector_norm(projected[1] - projected[0]),
+        torch.tensor(1.5),
+    )

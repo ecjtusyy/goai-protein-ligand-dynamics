@@ -50,3 +50,32 @@ def bond_length_error(
     )
     error = predicted_length - reference_length
     return error.square().mean() if squared else error.abs().mean()
+
+
+def project_bond_lengths(
+    coordinates: torch.Tensor,
+    reference: torch.Tensor,
+    edges: torch.Tensor,
+    iterations: int = 5,
+) -> torch.Tensor:
+    projected = coordinates.clone()
+    if edges.numel() == 0:
+        return projected
+
+    source, target = edges
+    target_lengths = torch.linalg.vector_norm(
+        reference[source] - reference[target],
+        dim=-1,
+    )
+
+    for _ in range(iterations):
+        for edge_index in range(edges.shape[1]):
+            i = int(source[edge_index])
+            j = int(target[edge_index])
+            vector = projected[..., j, :] - projected[..., i, :]
+            length = torch.linalg.vector_norm(vector, dim=-1, keepdim=True).clamp_min(1e-8)
+            correction = 0.5 * (length - target_lengths[edge_index]) * vector / length
+            projected[..., i, :] += correction
+            projected[..., j, :] -= correction
+
+    return projected
