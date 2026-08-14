@@ -1,4 +1,5 @@
 import importlib.util
+import inspect
 from pathlib import Path
 import sys
 from types import ModuleType
@@ -30,6 +31,12 @@ RUNNER_SPEC.loader.exec_module(RUNNER)
 def test_runner_bootstraps_repository_root() -> None:
     assert RUNNER.REPO_ROOT == ROOT
     assert str(ROOT) in sys.path
+
+
+def test_runner_matches_upstream_no_grad_evaluation_contract() -> None:
+    source = inspect.getsource(RUNNER.main)
+    assert "with torch.no_grad():" in source
+    assert "preflight_model" in source
 
 
 def test_published_model_args_match_checkpoint_hyperparameters() -> None:

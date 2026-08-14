@@ -39,6 +39,7 @@ CELLS = [
     code(
         """from pathlib import Path
 import os
+import shutil
 import subprocess
 import sys
 
@@ -61,7 +62,12 @@ if capability < (7, 0):
     raise RuntimeError(
         "检测到 P100/sm_60。请把 Kaggle Accelerator 改为 T4 x2 后重新运行；"
         "这样可避免 no kernel image is available。"
-    )"""
+    )
+
+free_gib = shutil.disk_usage("/kaggle/working").free / 1024**3
+print(f"Kaggle working 可用空间: {free_gib:.2f} GiB")
+if free_gib < 9:
+    raise RuntimeError("/kaggle/working 可用空间不足 9 GiB，无法安全下载和处理 MISATO_1000。")"""
     ),
     markdown("## 1. 安装与当前 PyTorch 匹配的 PyG 依赖"),
     code(
@@ -76,38 +82,79 @@ pyg_torch = f"{torch_parts[0]}.{torch_parts[1]}.0"
 cuda_tag = "cu" + torch.version.cuda.replace(".", "")
 pyg_wheels = f"https://data.pyg.org/whl/torch-{pyg_torch}+{cuda_tag}.html"
 
-pip_install("huggingface_hub", "h5py", "pandas", "tqdm", "torch-ema", "torch_geometric")
-pip_install("torch_scatter", "torch_cluster", extra_args=("-f", pyg_wheels))
+# NeuralMD 官方环境使用 PyG 2.5；固定版本，避免新版 MessagePassing 行为漂移。
+pip_install("huggingface_hub", "h5py", "pandas", "tqdm", "torch-ema", "torch_geometric==2.5.3")
+pip_install(
+    "torch_scatter==2.1.2",
+    "torch_cluster==1.6.3",
+    extra_args=("--no-index", "--force-reinstall", "-f", pyg_wheels),
+)
 
+# 用独立进程验证，避免当前 Notebook 内核缓存旧版 PyG 模块。
+probe_code = r'''
+import torch
 import torch_cluster
 import torch_geometric
 import torch_scatter
+from torch_geometric.nn import radius_graph
+
 print("PyG:", torch_geometric.__version__)
-print("torch_scatter:", torch_scatter.__version__)"""
+print("torch_scatter:", torch_scatter.__version__)
+print("torch_cluster:", torch_cluster.__version__)
+if torch_geometric.__version__ != "2.5.3":
+    raise RuntimeError(f"PyG 版本错误: {torch_geometric.__version__}")
+
+probe_pos = torch.tensor(
+    [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [3.0, 0.0, 0.0]],
+    dtype=torch.float32,
+    device="cuda:0",
+)
+probe_batch = torch.zeros(3, dtype=torch.long, device="cuda:0")
+probe_edges = radius_graph(probe_pos, r=1.0, batch=probe_batch, max_num_neighbors=8)
+torch.cuda.synchronize()
+if probe_edges.shape[1] != 2:
+    raise RuntimeError(f"torch_cluster CUDA 探针失败: edge shape={tuple(probe_edges.shape)}")
+print("PyG CUDA probe: OK")
+'''
+subprocess.check_call([sys.executable, "-c", probe_code])"""
     ),
     markdown("## 2. 固定代码版本：GOAI evaluator、NeuralMD、torchdiffeq"),
     code(
         """GOAI = WORK / "goai-protein-ligand-dynamics"
 OFFICIAL = WORK / "NeuralMD"
 TORCHDIFFEQ = WORK / "torchdiffeq"
-GOAI_COMMIT = "04e12c3e2c842f8c896f451e9170c0927cda31e6"
+GOAI_COMMIT = "233a492e4eeacb4c0ae4c86fb2e4745597cb7f47"
 OFFICIAL_COMMIT = "a2ae030838c6ea0251eb6a29bfe99dc9d8ee1cfe"
 TORCHDIFFEQ_COMMIT = "3d7c7ec8c534a9b18b8b7c7d1fea0c235e6468d0"
 
 
-def clone_repo(url, destination, commit=None):
-    if not (destination / ".git").exists():
-        subprocess.check_call(["git", "clone", "--depth", "1", url, str(destination)])
-    if commit:
-        subprocess.check_call(["git", "-C", str(destination), "fetch", "--depth", "1", "origin", commit])
-        subprocess.check_call(["git", "-C", str(destination), "checkout", "--detach", commit])
-    revision = subprocess.check_output(["git", "-C", str(destination), "rev-parse", "HEAD"], text=True).strip()
-    print(destination.name, revision)
+def run_command(command, cwd=None):
+    print(" ".join(map(str, command)))
+    subprocess.check_call(command, cwd=cwd)
 
 
-clone_repo("https://github.com/ecjtusyy/goai-protein-ligand-dynamics.git", GOAI, GOAI_COMMIT)
-clone_repo("https://github.com/chao1224/NeuralMD.git", OFFICIAL, OFFICIAL_COMMIT)
-clone_repo("https://github.com/chao1224/torchdiffeq.git", TORCHDIFFEQ, TORCHDIFFEQ_COMMIT)
+def checkout_repo(url, destination, commit):
+    # 只清理上次克隆失败留下的空壳目录，不碰数据和结果目录。
+    if destination.exists() and not (destination / ".git").is_dir():
+        shutil.rmtree(destination)
+
+    if not destination.exists():
+        run_command(["git", "clone", "--filter=blob:none", "--no-checkout", url, destination])
+
+    run_command(["git", "fetch", "--depth", "1", "origin", commit], cwd=destination)
+    run_command(["git", "checkout", "--detach", "--force", "FETCH_HEAD"], cwd=destination)
+
+    revision = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=destination, text=True
+    ).strip()
+    if revision != commit:
+        raise RuntimeError(f"{destination.name} 版本错误: {revision} != {commit}")
+    print(f"{destination.name}: {revision}")
+
+
+checkout_repo("https://github.com/ecjtusyy/goai-protein-ligand-dynamics.git", GOAI, GOAI_COMMIT)
+checkout_repo("https://github.com/chao1224/NeuralMD.git", OFFICIAL, OFFICIAL_COMMIT)
+checkout_repo("https://github.com/chao1224/torchdiffeq.git", TORCHDIFFEQ, TORCHDIFFEQ_COMMIT)
 pip_install("-e", str(TORCHDIFFEQ))
 pip_install("-e", str(OFFICIAL))"""
     ),
@@ -124,9 +171,14 @@ if mounted:
     target_raw = DATASET / "raw"
     target_raw.mkdir(parents=True, exist_ok=True)
     for name in ("MD.hdf5", "train_MD.txt", "val_MD.txt", "test_MD.txt"):
+        source = source_raw / name
+        if not source.is_file():
+            raise FileNotFoundError(f"Kaggle 输入数据不完整: {source}")
         destination = target_raw / name
+        if destination.is_symlink() and destination.resolve() != source.resolve():
+            destination.unlink()
         if not destination.exists():
-            destination.symlink_to(source_raw / name)
+            destination.symlink_to(source)
     print("使用 Kaggle 已挂载数据:", source_raw)
 else:
     snapshot_download(
@@ -162,16 +214,30 @@ HYPERPARAMETERS = Path(
     )
 )
 print("checkpoint:", CHECKPOINT, CHECKPOINT.stat().st_size, "bytes")
-print(HYPERPARAMETERS.read_text())
-assert CHECKPOINT.stat().st_size == 8_955_570"""
+hyperparameters_text = HYPERPARAMETERS.read_text()
+print(hyperparameters_text)
+
+if CHECKPOINT.stat().st_size != 8_955_570:
+    raise RuntimeError("官方 checkpoint 大小不正确，请删除损坏文件后重新运行本格。")
+
+required_hyperparameters = (
+    "NeuralMD_step_size",
+    "NeuralMD_scaling",
+    "NeuralMD_velocity_refined_value_coefficient",
+)
+missing_hyperparameters = [
+    name for name in required_hyperparameters if name not in hyperparameters_text
+]
+if missing_hyperparameters:
+    raise RuntimeError(f"官方超参数文件缺少字段: {missing_hyperparameters}")"""
     ),
     markdown("## 5. 真实 smoke run：3 个 unseen test complexes"),
     code(
-        """RUNNER = GOAI / "scripts/run_official_neuralmd.py"
-SMOKE = RESULTS / "smoke_seed42"
+        """SMOKE = RESULTS / "smoke_seed42"
 
 
 def run_evaluation(output_dir, limit=None):
+    output_dir.mkdir(parents=True, exist_ok=True)
     command = [
         sys.executable,
         "-m", "scripts.run_official_neuralmd",
@@ -184,13 +250,20 @@ def run_evaluation(output_dir, limit=None):
         "--tasks", "paper", "T1", "T2", "T3",
     ]
     if limit is not None:
-        command += ["--limit-complexes", str(limit)]
-    print(" ".join(command))
-    subprocess.check_call(command, cwd=GOAI)
+        command.extend(["--limit-complexes", str(limit)])
+
+    print("[NeuralMD]", " ".join(command))
+    subprocess.check_call(command, cwd=str(GOAI))
+
+    summary_path = output_dir / "neuralmd_summary.csv"
+    if not summary_path.is_file():
+        raise FileNotFoundError(f"评估结束但未生成汇总文件: {summary_path}")
+    return summary_path
 
 
-run_evaluation(SMOKE, limit=3)
-print((SMOKE / "neuralmd_summary.csv").read_text())"""
+smoke_summary = run_evaluation(SMOKE, limit=3)
+print("\\n[NeuralMD] 3-complex smoke test 完成")
+print(smoke_summary.read_text())"""
     ),
     markdown(
         """## 6. 完整评测：100 个 unseen test complexes
@@ -202,7 +275,9 @@ Smoke run 成功后，本单元默认继续跑完整测试集。若 Kaggle 会�
 FULL = RESULTS / "full_seed42"
 
 if RUN_FULL_TEST:
-    run_evaluation(FULL)
+    full_summary = run_evaluation(FULL)
+    print("\\n[NeuralMD] 100-complex 完整评测完成")
+    print(full_summary.read_text())
 else:
     print("完整评测已跳过；当前只有 3-complex smoke 结果。")"""
     ),
