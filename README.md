@@ -32,6 +32,31 @@ python -m scripts.inspect_misato --pdb-id 3SNC
 
 Notebook 使用官方模型、数据加载器、自定义 ODE solver 和六项官方指标。仓库中的 wrapper 只补充上游脚本缺少的 checkpoint 加载、eval-only、逐帧导出功能。
 
+## 官方 NeuralMD 完整评测进展
+
+已在 Kaggle Tesla T4 上完成 seed 42 官方 NeuralMD-ODE checkpoint 对 `MISATO_1000` 全部 100 个 unseen test complexes 的评测。实际运行环境为 PyTorch 2.10.0+cu128、PyG 2.5.3、torch-scatter 2.1.2 和 torch-cluster 1.6.3。
+
+| 任务 | 预测步数 | Mean RMSE (Å) | Final RMSE (Å) | Final stability (%) | Final COM error (Å) | Final Rg error (Å) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| paper | 99 | 4.4413 | 6.0007 | 62.81 | 5.5126 | 0.2845 |
+| T1 | 10 | 1.7706 | 2.3580 | 73.78 | 2.0063 | 0.2203 |
+| T2 | 20 | 2.6414 | 3.1949 | 68.69 | 2.8959 | 0.2671 |
+| T3 | 80 | 4.1561 | 5.6040 | 61.68 | 5.1300 | 0.2971 |
+
+T3 的平均逐帧 RMSE 为 4.1561 Å，首帧到末帧 RMSE 从 1.2100 Å 增至 5.6040 Å，增长 4.63 倍；stability 从 89.26% 降至 61.68%。与此同时，末帧 COM error 为 5.1300 Å，而 Rg error 只有 0.2971 Å。当前结果首先指向 **长时间 rollout 的误差累积与配体整体漂移**，同时伴随稳定性下降；它不支持把问题简单归结为配体内部尺度失真。
+
+最差样本 `4EZ5` 的 T3 final RMSE 为 38.7501 Å，其中 final COM error 为 38.5543 Å、final Rg error 为 0.0837 Å，是整体位置漂移主导的典型异常样本。该判断是当前完整测试结果上的诊断结论，下一步仍需用小型对照实验验证成因。
+
+- 完整运行 Notebook：[`notebooks/02_official_neuralmd_misato1000.ipynb`](notebooks/02_official_neuralmd_misato1000.ipynb)
+- 3-complex smoke 汇总：[`results/neuralmd_smoke_summary_seed42.csv`](results/neuralmd_smoke_summary_seed42.csv)
+- 100-complex 完整汇总：[`results/neuralmd_summary_seed42.csv`](results/neuralmd_summary_seed42.csv)
+- 首末帧失效诊断：[`results/neuralmd_weakness_diagnosis_seed42.csv`](results/neuralmd_weakness_diagnosis_seed42.csv)
+- T3 最差 15 个样本：[`results/neuralmd_t3_worst_complexes_seed42.csv`](results/neuralmd_t3_worst_complexes_seed42.csv)
+
+![Official NeuralMD failure curves](results/neuralmd_failure_curves.png)
+
+上述 CSV 均来自上传 Notebook 中已经显示的真实输出。逐帧 `neuralmd_frames.csv` 和完整 `neuralmd_complexes.csv` 没有嵌入 `.ipynb`，因此本次进度快照不伪造这两个文件；后续从 Kaggle 工作目录单独导出后再补充。
+
 ## 早期轻量实验
 
 直接上传并运行 [`notebooks/01_misato100_end_to_end.ipynb`](notebooks/01_misato100_end_to_end.ipynb)。首次自动下载 725 MB 子集时打开 Internet；也可以先把 `MISATO_100` 作为 Kaggle Dataset 挂载。Notebook 会把 CSV、PNG 和 checkpoint 写到 `/kaggle/working/goai_results/`。
@@ -93,8 +118,11 @@ Residual MLP 根据最近两步速度预测下一步速度。Ours 从同一 MLP 
 - [x] 官方 MISATO_1000 数据与 checkpoint 合同校验
 - [x] NeuralMD checkpoint 加载与 eval-only wrapper
 - [x] Kaggle 官方 NeuralMD smoke/full-run Notebook
-- [ ] 在 Kaggle 跑完 100-complex test split 并提交原始 CSV / PNG
-- [ ] 根据主导失效模式确定第一项 NeuralMD 改进
+- [x] 在 Kaggle 跑完 100-complex test split
+- [x] 提交完整汇总、失效诊断、坏样本 CSV 和结果图
+- [x] 初步定位长时间误差累积、整体漂移与稳定性下降
+- [ ] 导出并提交 Kaggle 工作目录中的逐帧和逐 complex 原始 CSV
+- [ ] 用小型对照实验验证整体漂移的成因并确定第一项 NeuralMD 改进
 
 ## 来源
 
