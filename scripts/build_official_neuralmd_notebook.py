@@ -193,7 +193,21 @@ sys.path.insert(0, str(GOAI))
 from src.neuralmd_official import verify_misato1000
 
 dataset_metadata = verify_misato1000(DATASET, strict_size=True)
-print(dataset_metadata)"""
+print(dataset_metadata)
+
+# 原始 7.46 GB HDF5 保留；只在运行时版本变化时重建 PyG 测试缓存。
+cache_dir = DATASET / "processed_semi_flexible"
+cache_marker = cache_dir / ".goai_runtime"
+cache_contract = f"pyg=2.5.3\\nofficial={OFFICIAL_COMMIT}\\n"
+old_contract = cache_marker.read_text() if cache_marker.is_file() else None
+if old_contract != cache_contract:
+    cached_test = cache_dir / "geometric_data_processed_test.pt"
+    if cached_test.exists():
+        cached_test.unlink()
+        print("已删除旧版 PyG 生成的测试缓存:", cached_test)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_marker.write_text(cache_contract)
+print("PyG dataset cache contract: OK")"""
     ),
     markdown("## 4. 下载 seed 42 官方 NeuralMD-ODE 权重"),
     code(

@@ -32,5 +32,6 @@ def test_official_notebook_pins_neuralmd_runtime_contract() -> None:
     assert 'torch_scatter==2.1.2' in source
     assert 'torch_cluster==1.6.3' in source
     assert 'PyG CUDA probe: OK' in source
+    assert 'PyG dataset cache contract: OK' in source
     assert '"-m", "scripts.run_official_neuralmd"' in source
     assert 'RUNNER = GOAI' not in source
