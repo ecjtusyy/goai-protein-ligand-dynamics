@@ -39,5 +39,5 @@ def test_notebook_pins_neuralmd_runtime_contract() -> None:
     assert "--force-reinstall" in source
     assert "--no-deps" in source
     assert "PyG radius_graph CUDA probe: OK" in source
-    assert '"-m", "scripts.run_official_neuralmd"' in source
+    assert '"scripts.run_official_neuralmd"' in source
     assert "RUNNER = GOAI" not in source

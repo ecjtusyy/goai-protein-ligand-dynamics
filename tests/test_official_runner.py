@@ -2,22 +2,10 @@ import importlib.util
 import inspect
 from pathlib import Path
 import sys
-from types import ModuleType
 
 
 ROOT = Path(__file__).parents[1]
-CONTRACT_SPEC = importlib.util.spec_from_file_location(
-    "src.neuralmd_official", ROOT / "src/neuralmd_official.py"
-)
-assert CONTRACT_SPEC and CONTRACT_SPEC.loader
-CONTRACT = importlib.util.module_from_spec(CONTRACT_SPEC)
-sys.modules[CONTRACT_SPEC.name] = CONTRACT
-CONTRACT_SPEC.loader.exec_module(CONTRACT)
-
-SRC = ModuleType("src")
-SRC.__path__ = []
-SRC.neuralmd_official = CONTRACT
-sys.modules["src"] = SRC
+sys.path.insert(0, str(ROOT))
 
 RUNNER_SPEC = importlib.util.spec_from_file_location(
     "run_official_neuralmd", ROOT / "scripts/run_official_neuralmd.py"
@@ -46,6 +34,15 @@ def test_published_model_args_match_checkpoint_hyperparameters() -> None:
     assert args.NeuralMD_step_size == 5
     assert args.NeuralMD_scaling == 100
     assert args.NeuralMD_velocity_refined_value_coefficient == 0.01
+    assert args.use_MLP_velocity is False
+
+
+def test_published_sde_args_match_checkpoint_hyperparameters() -> None:
+    args = RUNNER.published_sde_model_args()
+
+    assert args.NeuralMD_step_size == 10
+    assert args.NeuralMD_scaling == 100
+    assert args.NeuralMD_velocity_refined_value_coefficient == 0
     assert args.use_MLP_velocity is False
 
 

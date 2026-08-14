@@ -9,6 +9,7 @@ from pathlib import Path
 MISATO_1000_HDF5_BYTES = 7_455_614_516
 MISATO_1000_SPLIT_COUNTS = {"train": 800, "val": 100, "test": 100}
 NEURALMD_ODE_CHECKPOINT_BYTES = 8_955_570
+NEURALMD_SDE_CHECKPOINT_BYTES = 8_954_730
 
 
 @dataclass(frozen=True)

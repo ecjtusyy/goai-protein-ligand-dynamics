@@ -28,6 +28,7 @@ import numpy as np
 from src.neuralmd_official import (
     MISATO_1000_HDF5_BYTES,
     NEURALMD_ODE_CHECKPOINT_BYTES,
+    NEURALMD_SDE_CHECKPOINT_BYTES,
     ROLLOUT_WINDOWS,
     rollout_contract,
     verify_misato1000,
@@ -40,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-dir", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--dynamics", choices=("ode", "sde"), default="ode")
     parser.add_argument("--tasks", nargs="+", choices=ROLLOUT_WINDOWS, default=list(ROLLOUT_WINDOWS))
     parser.add_argument("--limit-complexes", type=int)
     parser.add_argument("--device", default="cuda:0")
@@ -70,10 +72,22 @@ def published_model_args() -> SimpleNamespace:
     )
 
 
+def published_sde_model_args() -> SimpleNamespace:
+    """作者发布的 MISATO_1000 NeuralMD_Binding02 seed 42 设置。"""
+
+    args = vars(published_model_args()).copy()
+    args.update(
+        NeuralMD_velocity_refined_value_coefficient=0.0,
+        NeuralMD_step_size=10.0,
+    )
+    return SimpleNamespace(**args)
+
+
 def import_upstream(official_repo: Path):
     required = [
         official_repo / "NeuralMD/datasets/MISATO/dataset_MISATO_semi_flexible.py",
         official_repo / "examples/models/NeuralMD_Binding01_2nd_ODE.py",
+        official_repo / "examples/models/NeuralMD_Binding02_2nd_SDE.py",
     ]
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
@@ -97,6 +111,7 @@ def import_upstream(official_repo: Path):
         get_stability_list,
     )
     from models.NeuralMD_Binding01_2nd_ODE import NeuralMD_Binding01
+    from models.NeuralMD_Binding02_2nd_SDE import NeuralMD_Binding02
 
     return SimpleNamespace(
         torch=torch,
@@ -104,6 +119,7 @@ def import_upstream(official_repo: Path):
         DataLoaderMISATO=DataLoaderMISATO,
         Dataset=DatasetMISATOSemiFlexibleMultiTrajectory,
         Model=NeuralMD_Binding01,
+        ModelSDE=NeuralMD_Binding02,
         matching=get_matching_list,
         stability=get_stability_list,
         ligand_collision=get_ligand_collision_list,
@@ -111,13 +127,19 @@ def import_upstream(official_repo: Path):
     )
 
 
-def safe_load_checkpoint(torch, checkpoint: Path, device):
+def safe_load_checkpoint(
+    torch,
+    checkpoint: Path,
+    device,
+    *,
+    expected_bytes: int = NEURALMD_ODE_CHECKPOINT_BYTES,
+):
     if not checkpoint.is_file():
         raise FileNotFoundError(checkpoint)
-    if checkpoint.stat().st_size != NEURALMD_ODE_CHECKPOINT_BYTES:
+    if checkpoint.stat().st_size != expected_bytes:
         raise ValueError(
             f"Checkpoint has {checkpoint.stat().st_size:,} bytes; "
-            f"expected {NEURALMD_ODE_CHECKPOINT_BYTES:,}."
+            f"expected {expected_bytes:,}."
         )
     try:
         return torch.load(checkpoint, map_location=device, weights_only=True)
@@ -138,6 +160,13 @@ def ensure_supported_device(torch, requested: str):
                 "does not execute NeuralMD's PyG kernels on P100 (sm_60)."
             )
     return device
+
+
+def set_random_seed(torch, seed: int, device) -> None:
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    if device.type == "cuda":
+        torch.cuda.manual_seed_all(seed)
 
 
 def _to_float_list(values) -> list[float]:
@@ -192,7 +221,9 @@ def preflight_model(upstream, model, batch, model_args, device) -> dict:
     }
 
 
-def rollout_one(upstream, model, batch, window, model_args, device):
+def predict_trajectory(upstream, model, batch, window, model_args, device):
+    """使用官方积分设置返回设备上的 batch、预测轨迹和真实轨迹。"""
+
     torch = upstream.torch
     batch = batch.to(device)
     trajectory = batch.ligand_trajectory_pos
@@ -218,6 +249,22 @@ def rollout_one(upstream, model, batch, window, model_args, device):
     target = trajectory[:, window.target_start : window.target_stop, :].transpose(0, 1)
     if prediction.shape != target.shape:
         raise RuntimeError(f"prediction {prediction.shape} != target {target.shape}")
+    return batch, prediction, target
+
+
+def rollout_one(upstream, model, batch, window, model_args, device):
+    batch, prediction, target = predict_trajectory(
+        upstream, model, batch, window, model_args, device
+    )
+    return trajectory_metrics(upstream, batch, prediction, target)
+
+
+def trajectory_metrics(upstream, batch, prediction, target):
+    """用同一套官方指标评估任意形状匹配的预测轨迹。"""
+
+    torch = upstream.torch
+    if prediction.shape != target.shape:
+        raise ValueError(f"prediction {prediction.shape} != target {target.shape}")
 
     error = prediction - target
     rmse = torch.linalg.vector_norm(error, dim=-1).mean(dim=1).cpu().tolist()
@@ -328,14 +375,23 @@ def main() -> None:
     torch = upstream.torch
     device = ensure_supported_device(torch, args.device)
 
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    if device.type == "cuda":
-        torch.cuda.manual_seed_all(args.seed)
+    set_random_seed(torch, args.seed, device)
 
-    model_args = published_model_args()
-    model = upstream.Model(model_args).to(device)
-    checkpoint = safe_load_checkpoint(torch, args.checkpoint, device)
+    if args.dynamics == "sde":
+        model_args = published_sde_model_args()
+        model_class = upstream.ModelSDE
+        expected_checkpoint_bytes = NEURALMD_SDE_CHECKPOINT_BYTES
+    else:
+        model_args = published_model_args()
+        model_class = upstream.Model
+        expected_checkpoint_bytes = NEURALMD_ODE_CHECKPOINT_BYTES
+    model = model_class(model_args).to(device)
+    checkpoint = safe_load_checkpoint(
+        torch,
+        args.checkpoint,
+        device,
+        expected_bytes=expected_checkpoint_bytes,
+    )
     model.load_state_dict(checkpoint["binding_model"], strict=True)
     model.eval()
 
@@ -354,6 +410,8 @@ def main() -> None:
     preflight_batch = next(iter(loader))
     preflight = preflight_model(upstream, model, preflight_batch, model_args, device)
     print("[preflight] " + json.dumps(preflight, ensure_ascii=False), flush=True)
+    # SDE pre检会采样一次噪声；重置后保证正式 rollout 与 seed 合同一致。
+    set_random_seed(torch, args.seed, device)
 
     frame_rows = []
     # Match the official evaluator. inference_mode() is intentionally avoided:
@@ -400,6 +458,7 @@ def main() -> None:
         "official_repo_commit": git_commit(args.official_repo),
         "goai_repo_commit": git_commit(Path.cwd()),
         "seed": args.seed,
+        "dynamics": args.dynamics,
         "tasks": args.tasks,
         "limit_complexes": args.limit_complexes,
         "rollout_contract": rollout_contract(),
