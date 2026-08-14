@@ -31,6 +31,8 @@ def test_official_notebook_pins_neuralmd_runtime_contract() -> None:
     assert 'torch_geometric==2.5.3' in source
     assert 'torch_scatter==2.1.2' in source
     assert 'torch_cluster==1.6.3' in source
+    assert '("--force-reinstall", "--no-deps")' in source
+    assert 'subprocess.check_call([sys.executable, "-c", probe_code])' in source
     assert 'PyG CUDA probe: OK' in source
     assert 'PyG dataset cache contract: OK' in source
     assert '"-m", "scripts.run_official_neuralmd"' in source
