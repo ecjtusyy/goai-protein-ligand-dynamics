@@ -398,6 +398,6 @@ NOTEBOOK = {
 
 
 if __name__ == "__main__":
-    output = Path("notebooks/02_official_neuralmd_misato1000.ipynb")
+    output = Path("notebooks/neuralmd_misato1000.ipynb")
     output.write_text(json.dumps(NOTEBOOK, ensure_ascii=False, indent=1) + "\n")
     print(output)

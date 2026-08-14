@@ -1,16 +1,19 @@
-from .baselines import linear_forecast, static_forecast
-from .geometry import bond_length_error, infer_bonds, project_bond_lengths
-from .misato import load_ligand_trajectory
-from .metrics import rmsd_curve
-from .model import VelocityMLP
+"""Contracts and evaluation helpers for the official NeuralMD baseline."""
+
+from .neuralmd_official import (
+    MISATO_1000_HDF5_BYTES,
+    MISATO_1000_SPLIT_COUNTS,
+    NEURALMD_ODE_CHECKPOINT_BYTES,
+    ROLLOUT_WINDOWS,
+    rollout_contract,
+    verify_misato1000,
+)
 
 __all__ = [
-    "VelocityMLP",
-    "bond_length_error",
-    "infer_bonds",
-    "linear_forecast",
-    "load_ligand_trajectory",
-    "rmsd_curve",
-    "project_bond_lengths",
-    "static_forecast",
+    "MISATO_1000_HDF5_BYTES",
+    "MISATO_1000_SPLIT_COUNTS",
+    "NEURALMD_ODE_CHECKPOINT_BYTES",
+    "ROLLOUT_WINDOWS",
+    "rollout_contract",
+    "verify_misato1000",
 ]

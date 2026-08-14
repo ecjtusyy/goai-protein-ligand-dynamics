@@ -9,7 +9,3 @@ __pycache__/
 *.pt
 *.pth
 .env
-results/h*_training.csv
-results/multistep_training.csv
-results/selection*
-results/trial*
