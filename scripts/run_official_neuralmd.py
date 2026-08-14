@@ -17,6 +17,12 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
+# When this file is launched as ``python scripts/run_official_neuralmd.py``,
+# Python puts ``scripts/`` rather than the repository root on sys.path.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 import numpy as np
 
 from src.neuralmd_official import (
