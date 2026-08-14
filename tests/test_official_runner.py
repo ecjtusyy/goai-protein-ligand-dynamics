@@ -27,6 +27,11 @@ sys.modules[RUNNER_SPEC.name] = RUNNER
 RUNNER_SPEC.loader.exec_module(RUNNER)
 
 
+def test_runner_bootstraps_repository_root() -> None:
+    assert RUNNER.REPO_ROOT == ROOT
+    assert str(ROOT) in sys.path
+
+
 def test_published_model_args_match_checkpoint_hyperparameters() -> None:
     args = RUNNER.published_model_args()
 

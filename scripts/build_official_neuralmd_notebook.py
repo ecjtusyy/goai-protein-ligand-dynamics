@@ -90,7 +90,7 @@ print("torch_scatter:", torch_scatter.__version__)"""
         """GOAI = WORK / "goai-protein-ligand-dynamics"
 OFFICIAL = WORK / "NeuralMD"
 TORCHDIFFEQ = WORK / "torchdiffeq"
-GOAI_COMMIT = "2d5184d56881e4bcff0f69d1cc5db71476a82935"
+GOAI_COMMIT = "04e12c3e2c842f8c896f451e9170c0927cda31e6"
 OFFICIAL_COMMIT = "a2ae030838c6ea0251eb6a29bfe99dc9d8ee1cfe"
 TORCHDIFFEQ_COMMIT = "3d7c7ec8c534a9b18b8b7c7d1fea0c235e6468d0"
 
@@ -174,7 +174,7 @@ SMOKE = RESULTS / "smoke_seed42"
 def run_evaluation(output_dir, limit=None):
     command = [
         sys.executable,
-        str(RUNNER),
+        "-m", "scripts.run_official_neuralmd",
         "--official-repo", str(OFFICIAL),
         "--dataset-dir", str(DATASET),
         "--checkpoint", str(CHECKPOINT),
