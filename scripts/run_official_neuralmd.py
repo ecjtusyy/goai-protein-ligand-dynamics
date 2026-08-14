@@ -144,6 +144,54 @@ def _to_float_list(values) -> list[float]:
     return [float(value.detach().cpu()) if hasattr(value, "detach") else float(value) for value in values]
 
 
+def build_condition(batch):
+    """Build the exact conditioning tuple used by the upstream evaluator."""
+
+    return (
+        batch.ligand_x,
+        batch.batch_ligand,
+        batch.ligand_mass,
+        batch.protein_pos[batch.mask_n],
+        batch.protein_pos[batch.mask_ca],
+        batch.protein_pos[batch.mask_c],
+        batch.protein_backbone_residue,
+        batch.batch_residue,
+    )
+
+
+def preflight_model(upstream, model, batch, model_args, device) -> dict:
+    """Run one RHS evaluation before starting a long ODE rollout."""
+
+    torch = upstream.torch
+    batch = batch.to(device)
+    trajectory = batch.ligand_trajectory_pos
+    position = trajectory[:, 0, :]
+    velocity = trajectory[:, 1, :] - trajectory[:, 0, :]
+
+    # The public NeuralMD evaluator uses torch.no_grad(), not inference_mode().
+    with torch.no_grad():
+        acceleration, refined_velocity = model(
+            torch.zeros((), dtype=torch.float32, device=device),
+            (velocity, position),
+            condition=build_condition(batch),
+        )
+
+    if acceleration.shape != position.shape:
+        raise RuntimeError(f"Preflight acceleration {acceleration.shape} != position {position.shape}")
+    if refined_velocity.shape != velocity.shape:
+        raise RuntimeError(f"Preflight velocity {refined_velocity.shape} != velocity {velocity.shape}")
+    if not torch.isfinite(acceleration).all() or not torch.isfinite(refined_velocity).all():
+        raise RuntimeError("NeuralMD preflight produced NaN or Inf")
+
+    return {
+        "ligand_atoms": int(batch.ligand_x.numel()),
+        "protein_residues": int(batch.protein_backbone_residue.numel()),
+        "acceleration_abs_max": float(acceleration.abs().max().cpu()),
+        "velocity_abs_max": float(refined_velocity.abs().max().cpu()),
+        "step_size": model_args.NeuralMD_step_size / model_args.NeuralMD_scaling,
+    }
+
+
 def rollout_one(upstream, model, batch, window, model_args, device):
     torch = upstream.torch
     batch = batch.to(device)
@@ -157,16 +205,7 @@ def rollout_one(upstream, model, batch, window, model_args, device):
     times = torch.arange(window.horizon + 1, dtype=torch.float32, device=device)
     times = times / model_args.NeuralMD_scaling
 
-    condition = (
-        batch.ligand_x,
-        batch.batch_ligand,
-        batch.ligand_mass,
-        batch.protein_pos[batch.mask_n],
-        batch.protein_pos[batch.mask_ca],
-        batch.protein_pos[batch.mask_c],
-        batch.protein_backbone_residue,
-        batch.batch_residue,
-    )
+    condition = build_condition(batch)
     _, positions = upstream.odeint(
         model,
         (velocity, position),
@@ -312,13 +351,27 @@ def main() -> None:
         test_ids = test_ids[:limit]
 
     loader = upstream.DataLoaderMISATO(dataset, batch_size=1, num_workers=0, shuffle=False)
+    preflight_batch = next(iter(loader))
+    preflight = preflight_model(upstream, model, preflight_batch, model_args, device)
+    print("[preflight] " + json.dumps(preflight, ensure_ascii=False), flush=True)
+
     frame_rows = []
-    with torch.inference_mode():
+    # Match the official evaluator. inference_mode() is intentionally avoided:
+    # NeuralMD's legacy PyG layers use operations that are only guaranteed under
+    # the upstream no_grad() contract.
+    with torch.no_grad():
         for index, (pdb_id, batch) in enumerate(zip(test_ids, loader), start=1):
             print(f"[{index:03d}/{len(test_ids):03d}] {pdb_id}", flush=True)
             for task in args.tasks:
                 window = ROLLOUT_WINDOWS[task]
-                metrics = rollout_one(upstream, model, batch, window, model_args, device)
+                print(f"  {task}: {window.horizon} rollout steps", flush=True)
+                try:
+                    metrics = rollout_one(upstream, model, batch, window, model_args, device)
+                except Exception as error:
+                    raise RuntimeError(
+                        f"NeuralMD rollout failed at complex={pdb_id}, task={task}, "
+                        f"torch={torch.__version__}, cuda={torch.version.cuda}"
+                    ) from error
                 for step in range(window.horizon):
                     frame_rows.append(
                         {
@@ -350,6 +403,7 @@ def main() -> None:
         "tasks": args.tasks,
         "limit_complexes": args.limit_complexes,
         "rollout_contract": rollout_contract(),
+        "preflight": preflight,
         "torch": torch.__version__,
         "cuda": torch.version.cuda,
         "device": str(device),
