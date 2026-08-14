@@ -2,12 +2,13 @@
 
 GOAI「小分子–蛋白质结合轨迹预测」初赛实验。
 
-本项目比较 Static、Linear、Residual MLP，以及多步训练与键长约束投影模型。
+当前主线是：**先复现官方 NeuralMD，再根据完整逐帧结果确定改进方向**。早期的 Static、Linear、Residual MLP 与键长投影实验仅保留为轻量诊断，不作为初赛主模型。
 
 ## 数据
 
-- 官方数据：MISATO `MD.hdf5`
-- 开发子集：NeuralMD 作者提供的 `MISATO_100`
+- 全量 MISATO `MD.hdf5`：132.8 GB
+- 主实验子集：NeuralMD 作者提供的 `MISATO_1000`，官方文件大小 7,455,614,516 bytes，800 / 100 / 100 complexes
+- 早期诊断子集：`MISATO_100`，80 / 10 / 10 complexes
 - 数据文件不上传 GitHub
 
 `MISATO_100` 包含 80 / 10 / 10 个训练、验证和测试复合物。下载后运行：
@@ -19,7 +20,19 @@ python -m scripts.inspect_misato --pdb-id 3SNC
 
 已验证 `3SNC` 的配体重原子轨迹形状为 `(100, 39, 3)`。
 
-## Kaggle
+## Kaggle：先跑官方 NeuralMD
+
+上传并运行 [`notebooks/02_official_neuralmd_misato1000.ipynb`](notebooks/02_official_neuralmd_misato1000.ipynb)：
+
+1. Kaggle 打开 Internet，Accelerator 选择 **T4 x2**，不要选择 P100；
+2. Notebook 下载并严格校验官方 `MISATO_1000` 和 seed 42 NeuralMD-ODE checkpoint；
+3. 先对 3 个 unseen complexes 做 smoke run；
+4. 再评测完整 100-complex test split；
+5. 输出论文口径及 T1 / T2 / T3 的逐帧 CSV、坏样本 CSV 和失效曲线 PNG。
+
+Notebook 使用官方模型、数据加载器、自定义 ODE solver 和六项官方指标。仓库中的 wrapper 只补充上游脚本缺少的 checkpoint 加载、eval-only、逐帧导出功能。
+
+## 早期轻量实验
 
 直接上传并运行 [`notebooks/01_misato100_end_to_end.ipynb`](notebooks/01_misato100_end_to_end.ipynb)。首次自动下载 725 MB 子集时打开 Internet；也可以先把 `MISATO_100` 作为 Kaggle Dataset 挂载。Notebook 会把 CSV、PNG 和 checkpoint 写到 `/kaggle/working/goai_results/`。
 
@@ -45,7 +58,7 @@ python -m scripts.run_models \
 
 Residual MLP 根据最近两步速度预测下一步速度。Ours 从同一 MLP checkpoint 出发，增加 5 步 rollout loss、键长 loss，并对输出执行 5 次键长约束投影。键由初始构型和共价半径规则推断。
 
-## 初步结果
+## 早期诊断结果（不是 NeuralMD）
 
 以下是 MISATO_100 测试子集（10 个 unseen complexes）上的自定义诊断结果，不是官方评分。表中报告最后一个预测时刻的 ligand RMSD：
 
@@ -67,7 +80,7 @@ Residual MLP 根据最近两步速度预测下一步速度。Ours 从同一 MLP 
 
 ![Bond error vs prediction horizon](results/final_bond_test.png)
 
-当前结果支持“显式几何约束能显著减少结构失真”，但尚不能证明该小模型全面提高长时坐标精度。T3 中 Ours 优于普通 MLP，但仍弱于 Static；后续需要加入蛋白局部环境和等变表示。
+这些结果只支持“显式几何约束能显著减少结构失真”，不能证明该小模型全面提高长时坐标精度。T3 中 Ours 优于普通 MLP，但仍弱于 Static。因此不再凭这组玩具结果直接设计主模型，下一步以官方 NeuralMD 的完整测试结果为依据。
 
 ## 进度
 
@@ -77,6 +90,11 @@ Residual MLP 根据最近两步速度预测下一步速度。Ours 从同一 MLP 
 - [x] RMSD–horizon 曲线
 - [x] Residual MLP
 - [x] Multi-step + geometry
+- [x] 官方 MISATO_1000 数据与 checkpoint 合同校验
+- [x] NeuralMD checkpoint 加载与 eval-only wrapper
+- [x] Kaggle 官方 NeuralMD smoke/full-run Notebook
+- [ ] 在 Kaggle 跑完 100-complex test split 并提交原始 CSV / PNG
+- [ ] 根据主导失效模式确定第一项 NeuralMD 改进
 
 ## 来源
 
