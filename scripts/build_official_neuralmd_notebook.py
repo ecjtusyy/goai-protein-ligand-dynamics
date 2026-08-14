@@ -82,12 +82,17 @@ pyg_torch = f"{torch_parts[0]}.{torch_parts[1]}.0"
 cuda_tag = "cu" + torch.version.cuda.replace(".", "")
 pyg_wheels = f"https://data.pyg.org/whl/torch-{pyg_torch}+{cuda_tag}.html"
 
-# NeuralMD 官方环境使用 PyG 2.5；固定版本，避免新版 MessagePassing 行为漂移。
-pip_install("huggingface_hub", "h5py", "pandas", "tqdm", "torch-ema", "torch_geometric==2.5.3")
+# NeuralMD 官方环境使用 PyG 2.5。Kaggle 预装的是 PyG 2.8，必须强制降级；
+# 否则新版 radius_graph 会转而要求 pyg-lib>=0.6.0。
+pip_install("huggingface_hub", "h5py", "pandas", "tqdm", "torch-ema")
+pip_install(
+    "torch_geometric==2.5.3",
+    extra_args=("--force-reinstall", "--no-deps"),
+)
 pip_install(
     "torch_scatter==2.1.2",
     "torch_cluster==1.6.3",
-    extra_args=("--no-index", "--force-reinstall", "-f", pyg_wheels),
+    extra_args=("--no-index", "--force-reinstall", "--no-deps", "-f", pyg_wheels),
 )
 
 # 用独立进程验证，避免当前 Notebook 内核缓存旧版 PyG 模块。
@@ -251,6 +256,9 @@ if missing_hyperparameters:
 
 
 def run_evaluation(output_dir, limit=None):
+    # 再验一次独立进程实际加载的 PyG，防止中间安装步骤覆盖依赖版本。
+    subprocess.check_call([sys.executable, "-c", probe_code])
+
     output_dir.mkdir(parents=True, exist_ok=True)
     command = [
         sys.executable,
