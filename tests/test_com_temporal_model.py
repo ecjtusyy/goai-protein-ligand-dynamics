@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from src.com_temporal_model import (
@@ -124,3 +125,69 @@ def test_small_trajectory_can_be_overfit() -> None:
         losses.append(float(loss.detach()))
 
     assert losses[-1] < 0.1 * losses[0]
+
+
+def observed_history(dtype=torch.float32):
+    positions, _, _ = inputs(dtype=dtype)
+    first = positions[0]
+    return torch.stack(
+        (
+            first - torch.tensor([0.3, 0.1, 0.0], dtype=dtype),
+            first - torch.tensor([0.2, 0.05, 0.0], dtype=dtype),
+            first - torch.tensor([0.1, 0.02, 0.0], dtype=dtype),
+        )
+    )
+
+
+def test_history_conditioning_is_equivariant_and_uses_observed_path() -> None:
+    model = COMTemporalCorrector(
+        hidden_dim=8,
+        rbf_channels=4,
+        history_conditioning=True,
+    ).double().eval()
+    randomize_head(model)
+    positions, masses, protein = inputs(dtype=torch.float64)
+    observed = observed_history(dtype=torch.float64)
+    rotation = torch.tensor(
+        [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        dtype=torch.float64,
+    )
+    shift = torch.tensor([3.0, -4.0, 2.0], dtype=torch.float64)
+
+    original = model(
+        positions, masses, protein, observed_positions=observed
+    ).mean
+    transformed = model(
+        positions @ rotation.T + shift,
+        masses,
+        protein @ rotation.T + shift,
+        observed_positions=observed @ rotation.T + shift,
+    ).mean
+    altered = observed.clone()
+    altered[0] += torch.tensor([0.7, -0.4, 0.2], dtype=torch.float64)
+    altered_prediction = model(
+        positions, masses, protein, observed_positions=altered
+    ).mean
+
+    torch.testing.assert_close(transformed, original @ rotation.T, rtol=1e-6, atol=1e-7)
+    assert not torch.allclose(altered_prediction, original)
+
+
+def test_history_model_requires_three_observed_frames() -> None:
+    model = COMTemporalCorrector(
+        hidden_dim=8,
+        rbf_channels=4,
+        history_conditioning=True,
+    )
+    positions, masses, protein = inputs()
+
+    with pytest.raises(ValueError, match="required"):
+        model(positions, masses, protein)
+
+    with pytest.raises(ValueError, match="at least three"):
+        model(
+            positions,
+            masses,
+            protein,
+            observed_positions=observed_history()[:2],
+        )

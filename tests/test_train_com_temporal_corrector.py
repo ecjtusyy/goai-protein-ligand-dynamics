@@ -36,6 +36,8 @@ def make_split(root: Path, split: str, count: int) -> None:
                 [[0.0, 1.0, 2.0], [2.0, -1.0, 1.0]], dtype=np.float32
             ),
             "protein_residue_types": np.array([1, 2]),
+            "observed_positions": positions[:3] - 0.1,
+            "observed_frames": np.arange(3),
         }
         relative = f"complexes/{pdb_id}.npz"
         np.savez_compressed(split_dir / relative, **arrays)
@@ -99,3 +101,34 @@ def test_end_to_end_cpu_training_resume_and_artifacts(tmp_path: Path) -> None:
     TRAINER.main(common + ["--epochs", "3", "--resume"])
 
     assert len(read_rows(output_dir / "history.csv")) == 3
+
+
+def test_end_to_end_history_conditioned_training(tmp_path: Path) -> None:
+    cache_root = tmp_path / "cache"
+    output_dir = tmp_path / "history-output"
+    make_split(cache_root, "train", 2)
+    make_split(cache_root, "val", 1)
+
+    TRAINER.main(
+        [
+            "--cache-root",
+            str(cache_root),
+            "--output-dir",
+            str(output_dir),
+            "--device",
+            "cpu",
+            "--epochs",
+            "2",
+            "--patience",
+            "5",
+            "--hidden-dim",
+            "8",
+            "--rbf-channels",
+            "4",
+            "--history-conditioning",
+        ]
+    )
+
+    checkpoint = torch.load(output_dir / "best_model.pth", weights_only=True)
+    assert checkpoint["model_config"]["history_conditioning"] is True
+    assert len(read_rows(output_dir / "history.csv")) == 2

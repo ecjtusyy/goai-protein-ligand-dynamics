@@ -49,6 +49,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--rbf-channels", type=int, default=8)
     parser.add_argument("--protein-cutoff", type=float, default=12.0)
+    parser.add_argument("--history-conditioning", action="store_true")
     parser.add_argument("--success-threshold-pct", type=float, default=5.0)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--resume", action="store_true")
@@ -107,7 +108,10 @@ def _inputs(item: dict, device: torch.device) -> tuple[torch.Tensor, ...]:
     masses = item["ligand_masses"].to(device=device, dtype=positions.dtype)
     protein = item["protein_ca_positions"].to(device=device, dtype=positions.dtype)
     residual = item["residual"].to(device=device, dtype=positions.dtype)
-    return positions, masses, protein, residual
+    observed = item.get("observed_positions")
+    if observed is not None:
+        observed = observed.to(device=device, dtype=positions.dtype)
+    return positions, masses, protein, residual, observed
 
 
 def _point_metrics(predicted_com: torch.Tensor, residual: torch.Tensor) -> dict[str, torch.Tensor]:
@@ -147,10 +151,15 @@ def run_epoch(
     context = torch.enable_grad() if training else torch.no_grad()
     with context:
         for item in loader:
-            positions, masses, protein, residual = _inputs(item, device)
+            positions, masses, protein, residual, observed = _inputs(item, device)
             if training:
                 optimizer.zero_grad(set_to_none=True)
-            prediction = model(positions, masses, protein)
+            prediction = model(
+                positions,
+                masses,
+                protein,
+                observed_positions=observed if model.history_conditioning else None,
+            )
             loss, mean_mse, final_mse = com_temporal_loss(
                 prediction.mean,
                 residual,
@@ -225,8 +234,13 @@ def _evaluate_best(
 
     with torch.no_grad():
         for item in dataset:
-            positions, masses, protein, residual = _inputs(item, device)
-            predicted_com = model(positions, masses, protein).mean
+            positions, masses, protein, residual, observed = _inputs(item, device)
+            predicted_com = model(
+                positions,
+                masses,
+                protein,
+                observed_positions=observed if model.history_conditioning else None,
+            ).mean
             baseline = torch.linalg.vector_norm(residual, dim=-1).mean(dim=1)
             corrected = torch.linalg.vector_norm(
                 residual - predicted_com[:, None, :], dim=-1
@@ -370,8 +384,16 @@ def main(argv: list[str] | None = None) -> None:
     device = torch.device(args.device)
     _set_seed(args.seed)
 
-    train_dataset = ResidualCacheDataset(args.cache_root / "train", expected_split="train")
-    val_dataset = ResidualCacheDataset(args.cache_root / "val", expected_split="val")
+    train_dataset = ResidualCacheDataset(
+        args.cache_root / "train",
+        expected_split="train",
+        require_history=args.history_conditioning,
+    )
+    val_dataset = ResidualCacheDataset(
+        args.cache_root / "val",
+        expected_split="val",
+        require_history=args.history_conditioning,
+    )
     for dataset in (train_dataset, val_dataset):
         if dataset.manifest.get("task") != "T3":
             raise ValueError("COM temporal training requires T3 caches")
@@ -390,6 +412,9 @@ def main(argv: list[str] | None = None) -> None:
         "rbf_channels": args.rbf_channels,
         "protein_cutoff": args.protein_cutoff,
     }
+    # False 时保持旧 checkpoint 的配置合同和 state_dict 完全兼容。
+    if args.history_conditioning:
+        model_config["history_conditioning"] = True
     model = COMTemporalCorrector(**model_config).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay
@@ -422,6 +447,8 @@ def main(argv: list[str] | None = None) -> None:
         "train_manifest_sha256": _sha256(args.cache_root / "train/manifest.json"),
         "val_manifest_sha256": _sha256(args.cache_root / "val/manifest.json"),
     }
+    if args.history_conditioning:
+        config["history_conditioning"] = True
     comparable_keys = {"epochs", "patience"}
     history: list[dict] = []
     best_score = float("inf")

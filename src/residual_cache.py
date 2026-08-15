@@ -24,6 +24,10 @@ CACHE_ARRAYS = (
     "protein_c_positions",
     "protein_residue_types",
 )
+HISTORY_CACHE_ARRAYS = (
+    "observed_positions",
+    "observed_frames",
+)
 
 
 def read_training_split_ids(dataset_dir: str | Path, split: str) -> list[str]:
@@ -134,3 +138,99 @@ def validate_complex_cache(path: str | Path, expected_frames) -> None:
         if not np.array_equal(frames, np.asarray(expected_frames, dtype=np.int64)):
             raise ValueError(f"{path} target frames do not match the requested rollout")
         np.testing.assert_allclose(residual, target - prediction, rtol=1e-5, atol=1e-6)
+
+
+def validate_observed_history(
+    observed_positions,
+    observed_frames,
+    *,
+    ligand_atoms: int,
+    first_target_frame: int,
+) -> None:
+    """历史必须完整位于监督窗口之前，防止把未来真值泄漏给模型。"""
+
+    positions = np.asarray(observed_positions)
+    frames = np.asarray(observed_frames)
+    if positions.ndim != 3 or positions.shape[1:] != (ligand_atoms, 3):
+        raise ValueError(
+            "observed_positions must have shape "
+            f"[history, {ligand_atoms}, 3], got {positions.shape}"
+        )
+    if not np.issubdtype(positions.dtype, np.floating):
+        raise TypeError("observed_positions must be floating point")
+    if not np.isfinite(positions).all():
+        raise ValueError("observed_positions contains NaN or Inf")
+    if frames.shape != (positions.shape[0],) or not np.issubdtype(frames.dtype, np.integer):
+        raise ValueError("observed_frames must be one integer per history frame")
+    if not np.array_equal(frames, np.arange(positions.shape[0], dtype=frames.dtype)):
+        raise ValueError("observed_frames must be contiguous and start at zero")
+    if positions.shape[0] < 2:
+        raise ValueError("observed history needs at least two frames")
+    if int(frames[-1]) >= first_target_frame:
+        raise ValueError("observed history overlaps the target window")
+
+
+def augment_complex_cache_history(
+    path: str | Path,
+    observed_positions,
+    observed_frames,
+    *,
+    expected_target_positions=None,
+    resume: bool = False,
+    overwrite: bool = False,
+) -> bool:
+    """原子替换一个 NPZ；返回 True 表示本次确实写入了历史。"""
+
+    if resume and overwrite:
+        raise ValueError("resume and overwrite are mutually exclusive")
+    path = Path(path)
+    with np.load(path, allow_pickle=False) as archive:
+        missing = [key for key in CACHE_ARRAYS if key not in archive]
+        if missing:
+            raise ValueError(f"{path} is missing cache arrays: {missing}")
+        payload = {key: archive[key].copy() for key in archive.files}
+
+    target = payload["true_positions"]
+    target_frames = payload["target_frames"]
+    validate_observed_history(
+        observed_positions,
+        observed_frames,
+        ligand_atoms=target.shape[1],
+        first_target_frame=int(target_frames[0]),
+    )
+    observed_positions = np.asarray(observed_positions, dtype=np.float32)
+    observed_frames = np.asarray(observed_frames, dtype=np.int64)
+
+    if expected_target_positions is not None:
+        np.testing.assert_allclose(
+            target,
+            np.asarray(expected_target_positions, dtype=np.float32),
+            rtol=0.0,
+            atol=1e-6,
+            err_msg=f"{path} does not match the official trajectory order",
+        )
+
+    existing = [key for key in HISTORY_CACHE_ARRAYS if key in payload]
+    if existing and len(existing) != len(HISTORY_CACHE_ARRAYS):
+        raise ValueError(f"{path} contains a partial observed-history contract")
+    if len(existing) == len(HISTORY_CACHE_ARRAYS) and not overwrite:
+        validate_observed_history(
+            payload["observed_positions"],
+            payload["observed_frames"],
+            ligand_atoms=target.shape[1],
+            first_target_frame=int(target_frames[0]),
+        )
+        if not resume:
+            raise FileExistsError(f"observed history already exists: {path}")
+        np.testing.assert_allclose(
+            payload["observed_positions"], observed_positions, rtol=0.0, atol=1e-6
+        )
+        np.testing.assert_array_equal(payload["observed_frames"], observed_frames)
+        return False
+
+    payload["observed_positions"] = observed_positions
+    payload["observed_frames"] = observed_frames
+    temporary = path.with_name(f".{path.stem}.history.tmp.npz")
+    np.savez_compressed(temporary, **payload)
+    temporary.replace(path)
+    return True

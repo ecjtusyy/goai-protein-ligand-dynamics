@@ -41,6 +41,7 @@ class COMTemporalCorrector(nn.Module):
         hidden_dim: int = 64,
         rbf_channels: int = 8,
         protein_cutoff: float = 12.0,
+        history_conditioning: bool = False,
     ) -> None:
         super().__init__()
         if hidden_dim < 1 or rbf_channels < 1:
@@ -51,6 +52,7 @@ class COMTemporalCorrector(nn.Module):
         self.hidden_dim = hidden_dim
         self.rbf_channels = rbf_channels
         self.protein_cutoff = protein_cutoff
+        self.history_conditioning = history_conditioning
         self.register_buffer("rbf_centers", torch.linspace(0.0, 1.0, rbf_channels))
         self.rbf_gamma = float(rbf_channels**2)
 
@@ -62,7 +64,8 @@ class COMTemporalCorrector(nn.Module):
             nn.LayerNorm(hidden_dim),
         )
         self.temporal = nn.GRU(hidden_dim, hidden_dim, batch_first=True)
-        self.coefficient_head = nn.Linear(hidden_dim, rbf_channels + 2)
+        vector_channels = rbf_channels + 2 + (3 if history_conditioning else 0)
+        self.coefficient_head = nn.Linear(hidden_dim, vector_channels)
 
         # 安全默认值：训练开始前严格退化为原始 NeuralMD（零修正）。
         nn.init.zeros_(self.coefficient_head.weight)
@@ -159,12 +162,60 @@ class COMTemporalCorrector(nn.Module):
         positions: torch.Tensor,
         masses: torch.Tensor,
         protein_ca: torch.Tensor,
+        *,
+        observed_positions: torch.Tensor | None = None,
     ) -> COMPrediction:
         self._validate_inputs(positions, masses, protein_ca)
         scalars, vector_basis = self._geometric_features(positions, masses, protein_ca)
-        hidden = self.scalar_encoder(scalars)
-        hidden, _ = self.temporal(hidden[None, :, :])
-        coefficients = self.coefficient_head(hidden[0])
+        if self.history_conditioning:
+            if observed_positions is None:
+                raise ValueError("observed_positions is required for history conditioning")
+            self._validate_inputs(observed_positions, masses, protein_ca)
+            if observed_positions.shape[1:] != positions.shape[1:]:
+                raise ValueError("observed and predicted trajectories must use the same atoms")
+            if observed_positions.shape[0] < 3:
+                raise ValueError("history conditioning requires at least three observed frames")
+            if observed_positions.device != positions.device or observed_positions.dtype != positions.dtype:
+                raise ValueError("observed and predicted trajectories must share device and dtype")
+
+            observed_scalars, _ = self._geometric_features(
+                observed_positions, masses, protein_ca
+            )
+            total_frames = observed_positions.shape[0] + positions.shape[0]
+            timeline = torch.linspace(
+                0.0,
+                1.0,
+                total_frames,
+                device=positions.device,
+                dtype=positions.dtype,
+            )
+            observed_scalars = observed_scalars.clone()
+            scalars = scalars.clone()
+            observed_scalars[:, -1] = timeline[: observed_positions.shape[0]]
+            scalars[:, -1] = timeline[observed_positions.shape[0] :]
+            sequence = torch.cat((observed_scalars, scalars), dim=0)
+            hidden = self.scalar_encoder(sequence)
+            hidden, _ = self.temporal(hidden[None, :, :])
+            hidden = hidden[0, observed_positions.shape[0] :]
+
+            observed_center = mass_weighted_com(observed_positions, masses)
+            predicted_center = mass_weighted_com(positions, masses)
+            history_velocity = observed_center[-1] - observed_center[-2]
+            previous_velocity = observed_center[-2] - observed_center[-3]
+            history_acceleration = history_velocity - previous_velocity
+            first_prediction_jump = predicted_center[0] - observed_center[-1]
+            history_basis = torch.stack(
+                (history_velocity, history_acceleration, first_prediction_jump), dim=0
+            )[None, :, :].expand(positions.shape[0], -1, -1)
+            vector_basis = torch.cat((vector_basis, history_basis), dim=1)
+        else:
+            if observed_positions is not None:
+                raise ValueError("observed_positions was provided to a non-history model")
+            hidden = self.scalar_encoder(scalars)
+            hidden, _ = self.temporal(hidden[None, :, :])
+            hidden = hidden[0]
+
+        coefficients = self.coefficient_head(hidden)
         mean = torch.einsum("fk,fkd->fd", coefficients, vector_basis)
         return COMPrediction(mean=mean)
 

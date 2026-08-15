@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from .residual_cache import CACHE_ARRAYS, TRAINING_SPLITS
+from .residual_cache import CACHE_ARRAYS, HISTORY_CACHE_ARRAYS, TRAINING_SPLITS
 from .temporal_residual_model import ResidualPrediction
 
 
@@ -21,10 +21,17 @@ CACHE_KEYS = tuple(key for key in CACHE_ARRAYS if key not in {"protein_n_positio
 class ResidualCacheDataset(Dataset):
     """按复合物懒加载压缩缓存，支持不同配体原子数。"""
 
-    def __init__(self, split_dir: str | Path, *, expected_split: str) -> None:
+    def __init__(
+        self,
+        split_dir: str | Path,
+        *,
+        expected_split: str,
+        require_history: bool = False,
+    ) -> None:
         if expected_split not in TRAINING_SPLITS:
             raise ValueError(f"expected_split must be one of {TRAINING_SPLITS}")
         self.split_dir = Path(split_dir).resolve()
+        self.require_history = require_history
         manifest_path = self.split_dir / "manifest.json"
         if not manifest_path.is_file():
             raise FileNotFoundError(f"missing cache manifest: {manifest_path}")
@@ -54,10 +61,15 @@ class ResidualCacheDataset(Dataset):
     def __getitem__(self, index: int) -> dict[str, torch.Tensor | str]:
         path = self.files[index]
         with np.load(path, allow_pickle=False) as archive:
-            missing = [key for key in CACHE_KEYS if key not in archive]
+            required = CACHE_KEYS + (HISTORY_CACHE_ARRAYS if self.require_history else ())
+            missing = [key for key in required if key not in archive]
             if missing:
                 raise ValueError(f"{path} is missing cache arrays: {missing}")
-            item = {key: torch.from_numpy(archive[key].copy()) for key in CACHE_KEYS}
+            history_present = [key for key in HISTORY_CACHE_ARRAYS if key in archive]
+            if history_present and len(history_present) != len(HISTORY_CACHE_ARRAYS):
+                raise ValueError(f"{path} contains a partial observed-history contract")
+            keys = CACHE_KEYS + (HISTORY_CACHE_ARRAYS if history_present else ())
+            item = {key: torch.from_numpy(archive[key].copy()) for key in keys}
         item["pdb_id"] = path.stem
         return item
 
