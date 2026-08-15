@@ -339,12 +339,28 @@ for variant in VARIANTS:
     smoke_checkpoints.append(checkpoint)
     print(variant, checkpoint)
 
+import numpy as np
 import pandas as pd
+
+nll_columns = ["train_nll", "val_nll"]
 for variant in VARIANTS:
     history = pd.read_csv(SMOKE_TRAIN_ROOT / variant / "history.csv")
     display(history)
     assert len(history) == SMOKE_EPOCHS
-    assert history.select_dtypes("number").notna().all().all()"""
+
+    # epoch、耗时、MSE 与 RMSE 对所有模型都必须是有限值。
+    regular_metrics = history.drop(columns=nll_columns).select_dtypes(include="number")
+    assert np.isfinite(regular_metrics.to_numpy()).all(), f"{variant} 常规指标含 NaN/Inf"
+
+    if variant == "ode_mu":
+        # 确定性消融没有 sigma 头，因此 NLL 按合同为空。
+        assert history[nll_columns].isna().all().all(), "ode_mu 不应生成 NLL"
+    else:
+        # 两个概率消融必须真正给出有限的 NLL。
+        nll_values = history[nll_columns].to_numpy(dtype=float)
+        assert np.isfinite(nll_values).all(), f"{variant} NLL 含 NaN/Inf"
+
+    print(f"[OK] {variant} history contract")"""
     ),
     markdown("## 7. Smoke C：同一次 ODE rollout 比较三种校正器"),
     code(

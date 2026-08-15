@@ -33,6 +33,9 @@ def test_notebook_runs_all_ablation_contracts_and_publication_gate() -> None:
     assert "NeuralMD_SDE/MISATO_1000_seed_42/model.pth" in source
     assert '"--dynamics", "sde"' in source
     assert "neuralmd_sde_seed42_single_sample" in source
+    assert 'if variant == "ode_mu":' in source
+    assert "history[nll_columns].isna().all().all()" in source
+    assert "np.isfinite(nll_values).all()" in source
     assert 'for forbidden in ("*.pth", "*.pt", "*.npz", "*.docx", "*.pdf")' in source
     assert "3-complex 结果只用于排错" in source
 
