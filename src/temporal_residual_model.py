@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 @dataclass
@@ -52,6 +53,7 @@ class TemporalProbabilisticResidual(nn.Module):
         probabilistic: bool = True,
         detach_uncertainty_features: bool = True,
         frame_chunk_size: int = 16,
+        gradient_checkpointing: bool = True,
         min_scale: float = 1e-3,
         initial_scale: float = 1.0,
     ) -> None:
@@ -70,6 +72,7 @@ class TemporalProbabilisticResidual(nn.Module):
         self.probabilistic = probabilistic
         self.detach_uncertainty_features = detach_uncertainty_features
         self.frame_chunk_size = frame_chunk_size
+        self.gradient_checkpointing = gradient_checkpointing
         self.min_scale = min_scale
 
         self.atom_embedding = nn.Embedding(atom_vocab, hidden_dim)
@@ -117,6 +120,52 @@ class TemporalProbabilisticResidual(nn.Module):
         if (masses <= 0).any():
             raise ValueError("masses must be strictly positive")
 
+    def _aggregate_valid_edges(
+        self,
+        *,
+        target_features: torch.Tensor,
+        neighbor_features: torch.Tensor,
+        relative: torch.Tensor,
+        distance: torch.Tensor,
+        mask: torch.Tensor,
+        cutoff: float,
+        message_network: nn.Module,
+        vector_weight: nn.Module,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """只对 cutoff 内的边执行 MLP，避免为大量无效稠密边保存激活。"""
+        frames, atoms, neighbors = mask.shape
+        frame_index, atom_index, neighbor_index = mask.nonzero(as_tuple=True)
+        groups = frames * atoms
+
+        if frame_index.numel() == 0:
+            aggregate = target_features.new_zeros((frames, atoms, self.hidden_dim))
+            vector = relative.new_zeros((frames, atoms, 3))
+            return aggregate, vector
+
+        edge_rbf = self.rbf(
+            distance[frame_index, atom_index, neighbor_index] / cutoff
+        )
+        edge_input = torch.cat(
+            (
+                target_features[atom_index],
+                neighbor_features[neighbor_index],
+                edge_rbf,
+            ),
+            dim=-1,
+        )
+        messages = message_network(edge_input)
+        flat_target = frame_index * atoms + atom_index
+        counts = mask.sum(dim=2).reshape(groups, 1).clamp_min(1).to(messages.dtype)
+
+        aggregate = messages.new_zeros((groups, self.hidden_dim))
+        aggregate = aggregate.index_add(0, flat_target, messages) / counts
+
+        weights = vector_weight(messages).squeeze(-1)
+        edge_vectors = weights[:, None] * relative[frame_index, atom_index, neighbor_index]
+        vector = edge_vectors.new_zeros((groups, 3))
+        vector = vector.index_add(0, flat_target, edge_vectors) / counts
+        return aggregate.view(frames, atoms, -1), vector.view(frames, atoms, 3)
+
     def _spatial_chunk(
         self,
         positions: torch.Tensor,
@@ -125,33 +174,33 @@ class TemporalProbabilisticResidual(nn.Module):
         residue_features: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         frames, atoms, _ = positions.shape
-        residues = protein_ca.shape[0]
-
         ligand_relative = positions[:, None, :, :] - positions[:, :, None, :]
         ligand_distance = torch.linalg.vector_norm(ligand_relative, dim=-1)
         ligand_mask = (ligand_distance > 0) & (ligand_distance < self.ligand_cutoff)
-        ligand_rbf = self.rbf(ligand_distance / self.ligand_cutoff)
-        source = atom_features[None, :, None, :].expand(frames, atoms, atoms, -1)
-        neighbor = atom_features[None, None, :, :].expand(frames, atoms, atoms, -1)
-        ligand_message = self.ligand_message(torch.cat((source, neighbor, ligand_rbf), dim=-1))
-        ligand_message = ligand_message * ligand_mask[..., None]
-        ligand_count = ligand_mask.sum(dim=2, keepdim=True).clamp_min(1)
-        ligand_aggregate = ligand_message.sum(dim=2) / ligand_count
-        ligand_weight = self.ligand_vector_weight(ligand_message).squeeze(-1)
-        ligand_vector = (ligand_weight[..., None] * ligand_relative).sum(dim=2) / ligand_count
+        ligand_aggregate, ligand_vector = self._aggregate_valid_edges(
+            target_features=atom_features,
+            neighbor_features=atom_features,
+            relative=ligand_relative,
+            distance=ligand_distance,
+            mask=ligand_mask,
+            cutoff=self.ligand_cutoff,
+            message_network=self.ligand_message,
+            vector_weight=self.ligand_vector_weight,
+        )
 
         protein_relative = protein_ca[None, None, :, :] - positions[:, :, None, :]
         protein_distance = torch.linalg.vector_norm(protein_relative, dim=-1)
         protein_mask = protein_distance < self.protein_cutoff
-        protein_rbf = self.rbf(protein_distance / self.protein_cutoff)
-        ligand = atom_features[None, :, None, :].expand(frames, atoms, residues, -1)
-        residue = residue_features[None, None, :, :].expand(frames, atoms, residues, -1)
-        protein_message = self.protein_message(torch.cat((ligand, residue, protein_rbf), dim=-1))
-        protein_message = protein_message * protein_mask[..., None]
-        protein_count = protein_mask.sum(dim=2, keepdim=True).clamp_min(1)
-        protein_aggregate = protein_message.sum(dim=2) / protein_count
-        protein_weight = self.protein_vector_weight(protein_message).squeeze(-1)
-        protein_vector = (protein_weight[..., None] * protein_relative).sum(dim=2) / protein_count
+        protein_aggregate, protein_vector = self._aggregate_valid_edges(
+            target_features=atom_features,
+            neighbor_features=residue_features,
+            relative=protein_relative,
+            distance=protein_distance,
+            mask=protein_mask,
+            cutoff=self.protein_cutoff,
+            message_network=self.protein_message,
+            vector_weight=self.protein_vector_weight,
+        )
 
         repeated_atom_features = atom_features[None, :, :].expand(frames, atoms, -1)
         hidden = self.spatial_update(
@@ -175,12 +224,23 @@ class TemporalProbabilisticResidual(nn.Module):
         ligand_vector_chunks = []
         protein_vector_chunks = []
         for start in range(0, positions.shape[0], self.frame_chunk_size):
-            hidden, ligand_vector, protein_vector = self._spatial_chunk(
-                positions[start : start + self.frame_chunk_size],
-                atom_features,
-                protein_ca,
-                residue_features,
-            )
+            chunk = positions[start : start + self.frame_chunk_size]
+            if self.training and torch.is_grad_enabled() and self.gradient_checkpointing:
+                hidden, ligand_vector, protein_vector = checkpoint(
+                    self._spatial_chunk,
+                    chunk,
+                    atom_features,
+                    protein_ca,
+                    residue_features,
+                    use_reentrant=False,
+                )
+            else:
+                hidden, ligand_vector, protein_vector = self._spatial_chunk(
+                    chunk,
+                    atom_features,
+                    protein_ca,
+                    residue_features,
+                )
             hidden_chunks.append(hidden)
             ligand_vector_chunks.append(ligand_vector)
             protein_vector_chunks.append(protein_vector)

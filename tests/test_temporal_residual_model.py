@@ -123,3 +123,43 @@ def test_frame_chunking_preserves_model_outputs() -> None:
 
     torch.testing.assert_close(chunked_prediction.mean, framewise_prediction.mean)
     torch.testing.assert_close(chunked_prediction.scale, framewise_prediction.scale)
+
+
+def test_message_mlps_only_receive_edges_inside_cutoff() -> None:
+    model = TemporalProbabilisticResidual(
+        hidden_dim=16,
+        rbf_channels=8,
+        temporal=False,
+        frame_chunk_size=8,
+    ).eval()
+    positions, atom_types, masses, _, _ = example_inputs()
+    protein_ca = torch.tensor(
+        [[0.0, 0.0, 2.0], [100.0, 100.0, 100.0]],
+        dtype=torch.float32,
+    )
+    residue_types = torch.tensor([1, 12])
+    rows = {}
+
+    def record_rows(name):
+        def hook(_module, inputs):
+            rows[name] = inputs[0].shape[0]
+
+        return hook
+
+    ligand_hook = model.ligand_message.register_forward_pre_hook(record_rows("ligand"))
+    protein_hook = model.protein_message.register_forward_pre_hook(record_rows("protein"))
+    try:
+        model(positions, atom_types, masses, protein_ca, residue_types)
+    finally:
+        ligand_hook.remove()
+        protein_hook.remove()
+
+    ligand_relative = positions[:, None, :, :] - positions[:, :, None, :]
+    ligand_distance = torch.linalg.vector_norm(ligand_relative, dim=-1)
+    expected_ligand = ((ligand_distance > 0) & (ligand_distance < 6.0)).sum().item()
+    protein_relative = protein_ca[None, None, :, :] - positions[:, :, None, :]
+    protein_distance = torch.linalg.vector_norm(protein_relative, dim=-1)
+    expected_protein = (protein_distance < 8.0).sum().item()
+
+    assert rows == {"ligand": expected_ligand, "protein": expected_protein}
+    assert rows["protein"] < positions.shape[0] * positions.shape[1] * protein_ca.shape[0]

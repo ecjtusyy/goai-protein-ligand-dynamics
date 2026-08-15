@@ -183,6 +183,7 @@ def main(argv: list[str] | None = None) -> None:
         "ligand_cutoff": args.ligand_cutoff,
         "protein_cutoff": args.protein_cutoff,
         "frame_chunk_size": args.frame_chunk_size,
+        "gradient_checkpointing": True,
         "detach_uncertainty_features": True,
         "min_scale": 1e-3,
         "initial_scale": 1.0,
