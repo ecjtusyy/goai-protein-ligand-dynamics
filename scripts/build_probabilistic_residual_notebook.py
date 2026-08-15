@@ -51,6 +51,7 @@ PUBLIC = RESULTS / "public"
 for directory in (WORK, RESULTS, PUBLIC):
     directory.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/neuralmd-matplotlib")
+os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
 RUN_FULL_PIPELINE = True
 SMOKE_COMPLEXES = 3
@@ -112,7 +113,7 @@ subprocess.check_call([sys.executable, "-c", probe])"""
         """GOAI = WORK / "goai-protein-ligand-dynamics"
 OFFICIAL = WORK / "NeuralMD"
 TORCHDIFFEQ = WORK / "torchdiffeq"
-GOAI_COMMIT = "78cbebfafed119a4e61bd66146a5235dff67cac5"
+GOAI_COMMIT = "85e0b112f0479713cdc11100d71419baaca6c6a5"
 OFFICIAL_COMMIT = "a2ae030838c6ea0251eb6a29bfe99dc9d8ee1cfe"
 TORCHDIFFEQ_COMMIT = "3d7c7ec8c534a9b18b8b7c7d1fea0c235e6468d0"
 
@@ -233,7 +234,7 @@ def cache_split(split, limit=None):
     run_command(command, cwd=GOAI)
 
 
-def train_variant(variant, root, epochs, patience, hidden_dim):
+def train_variant(variant, root, epochs, patience, hidden_dim, frame_chunk_size=16):
     output = root / variant
     checkpoint = output / "best_model.pth"
     latest_path = output / "latest.pth"
@@ -246,6 +247,7 @@ def train_variant(variant, root, epochs, patience, hidden_dim):
             latest.get("variant") == variant
             and saved_model.get("hidden_dim") == hidden_dim
             and saved_model.get("rbf_channels") == 16
+            and saved_model.get("frame_chunk_size") == frame_chunk_size
         )
         if same_contract and int(latest.get("epoch", 0)) >= epochs:
             print(f"[REUSE] {variant}: 已完成 {latest['epoch']} epochs")
@@ -262,6 +264,7 @@ def train_variant(variant, root, epochs, patience, hidden_dim):
         "--patience", str(patience),
         "--hidden-dim", str(hidden_dim),
         "--rbf-channels", "16",
+        "--frame-chunk-size", str(frame_chunk_size),
     ]
     if latest_path.is_file():
         command.append("--resume")
@@ -417,6 +420,7 @@ if RUN_FULL_PIPELINE:
             epochs=FULL_EPOCHS,
             patience=FULL_PATIENCE,
             hidden_dim=64,
+            frame_chunk_size=4,
         ))
     evaluate_checkpoints(full_checkpoints, FULL_EVAL)
     evaluate_sde(FULL_SDE)

@@ -14,12 +14,14 @@ def notebook_source() -> str:
 def test_notebook_has_smoke_before_full_and_pinned_code() -> None:
     source = notebook_source()
 
-    assert 'GOAI_COMMIT = "78cbebfafed119a4e61bd66146a5235dff67cac5"' in source
+    assert 'GOAI_COMMIT = "85e0b112f0479713cdc11100d71419baaca6c6a5"' in source
     assert source.index("Smoke A") < source.index("Full：")
     assert 'cache_split("train", limit=SMOKE_COMPLEXES)' in source
     assert 'cache_split("val", limit=SMOKE_COMPLEXES)' in source
     assert 'cache_split("train")' in source
     assert 'cache_split("val")' in source
+    assert "PYTORCH_ALLOC_CONF" in source
+    assert "frame_chunk_size=4" in source
 
 
 def test_notebook_runs_all_ablation_contracts_and_publication_gate() -> None:
