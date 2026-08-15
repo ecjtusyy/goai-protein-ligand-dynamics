@@ -14,7 +14,7 @@ def notebook_source() -> str:
 def test_notebook_has_smoke_before_full_and_pinned_code() -> None:
     source = notebook_source()
 
-    assert 'GOAI_COMMIT = "1be0576670a31d5115e1c72151a42adafeecea1e"' in source
+    assert 'GOAI_COMMIT = "78cbebfafed119a4e61bd66146a5235dff67cac5"' in source
     assert source.index("Smoke A") < source.index("Full：")
     assert 'cache_split("train", limit=SMOKE_COMPLEXES)' in source
     assert 'cache_split("val", limit=SMOKE_COMPLEXES)' in source
@@ -33,6 +33,7 @@ def test_notebook_runs_all_ablation_contracts_and_publication_gate() -> None:
     assert "NeuralMD_SDE/MISATO_1000_seed_42/model.pth" in source
     assert '"--dynamics", "sde"' in source
     assert "neuralmd_sde_seed42_single_sample" in source
+    assert 'print(f"[REUSE] {variant}: 已完成 {latest[\'epoch\']} epochs")' in source
     assert 'if variant == "ode_mu":' in source
     assert "history[nll_columns].isna().all().all()" in source
     assert "np.isfinite(nll_values).all()" in source

@@ -112,7 +112,7 @@ subprocess.check_call([sys.executable, "-c", probe])"""
         """GOAI = WORK / "goai-protein-ligand-dynamics"
 OFFICIAL = WORK / "NeuralMD"
 TORCHDIFFEQ = WORK / "torchdiffeq"
-GOAI_COMMIT = "1be0576670a31d5115e1c72151a42adafeecea1e"
+GOAI_COMMIT = "78cbebfafed119a4e61bd66146a5235dff67cac5"
 OFFICIAL_COMMIT = "a2ae030838c6ea0251eb6a29bfe99dc9d8ee1cfe"
 TORCHDIFFEQ_COMMIT = "3d7c7ec8c534a9b18b8b7c7d1fea0c235e6468d0"
 
@@ -235,6 +235,22 @@ def cache_split(split, limit=None):
 
 def train_variant(variant, root, epochs, patience, hidden_dim):
     output = root / variant
+    checkpoint = output / "best_model.pth"
+    latest_path = output / "latest.pth"
+
+    # Notebook 重跑时，完整训练不再进入无意义的 resume 流程。
+    if checkpoint.is_file() and latest_path.is_file():
+        latest = torch.load(latest_path, map_location="cpu", weights_only=True)
+        saved_model = latest.get("model_config", {})
+        same_contract = (
+            latest.get("variant") == variant
+            and saved_model.get("hidden_dim") == hidden_dim
+            and saved_model.get("rbf_channels") == 16
+        )
+        if same_contract and int(latest.get("epoch", 0)) >= epochs:
+            print(f"[REUSE] {variant}: 已完成 {latest['epoch']} epochs")
+            return checkpoint
+
     command = [
         sys.executable, "-m", "scripts.train_probabilistic_residual",
         "--cache-root", str(CACHE_ROOT),
@@ -247,10 +263,12 @@ def train_variant(variant, root, epochs, patience, hidden_dim):
         "--hidden-dim", str(hidden_dim),
         "--rbf-channels", "16",
     ]
-    if (output / "latest.pth").is_file():
+    if latest_path.is_file():
         command.append("--resume")
     run_command(command, cwd=GOAI)
-    return output / "best_model.pth"
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"训练结束但缺少 best checkpoint: {checkpoint}")
+    return checkpoint
 
 
 def evaluate_checkpoints(checkpoints, output, limit=None):
