@@ -145,6 +145,13 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _restore_generator_state(generator: torch.Generator, state: torch.Tensor) -> None:
+    """恢复 DataLoader 的 CPU RNG；checkpoint 其余张量可以随后加载到 GPU。"""
+    if not isinstance(state, torch.Tensor) or state.dtype != torch.uint8:
+        raise TypeError("generator_state must be a torch.uint8 tensor")
+    generator.set_state(state.detach().cpu().contiguous())
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     _validate_args(args)
@@ -218,7 +225,9 @@ def main(argv: list[str] | None = None) -> None:
     history = []
     start_epoch = 1
     if args.resume:
-        latest = torch.load(latest_path, map_location=device, weights_only=True)
+        # RNG state 属于 CPU Generator，不能被 map_location 搬到 CUDA。
+        # load_state_dict 会把模型与优化器张量复制到各自参数所在设备。
+        latest = torch.load(latest_path, map_location="cpu", weights_only=True)
         if latest["variant"] != args.variant or latest["model_config"] != model_config:
             raise ValueError("resume arguments do not match the saved model contract")
         comparable_config = {key: value for key, value in config.items() if key not in {"epochs", "patience"}}
@@ -229,7 +238,7 @@ def main(argv: list[str] | None = None) -> None:
             raise ValueError("resume arguments or cache manifests do not match the saved run")
         model.load_state_dict(latest["model_state_dict"], strict=True)
         optimizer.load_state_dict(latest["optimizer_state_dict"])
-        generator.set_state(latest["generator_state"])
+        _restore_generator_state(generator, latest["generator_state"])
         best_metric = float(latest["best_metric"])
         stale_epochs = int(latest["stale_epochs"])
         history = latest["history"]

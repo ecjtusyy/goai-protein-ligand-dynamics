@@ -39,6 +39,17 @@ def make_split(root: Path, split: str, count: int) -> None:
     (split_dir / "manifest.json").write_text(json.dumps(manifest))
 
 
+def test_restore_generator_state_keeps_cpu_byte_tensor() -> None:
+    source = torch.Generator().manual_seed(123)
+    restored = torch.Generator().manual_seed(999)
+
+    TRAINER._restore_generator_state(restored, source.get_state())
+
+    assert restored.get_state().device.type == "cpu"
+    assert restored.get_state().dtype == torch.uint8
+    assert torch.equal(restored.get_state(), source.get_state())
+
+
 def test_end_to_end_cpu_training_smoke(tmp_path: Path) -> None:
     cache_root = tmp_path / "cache"
     output_dir = tmp_path / "output"
